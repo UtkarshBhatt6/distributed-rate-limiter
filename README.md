@@ -80,12 +80,12 @@ go test -v ./pkg/ratelimit/...
 
 ## Token Bucket Algorithm Details
 
-1. **Capacity ($C$):** The maximum number of tokens a bucket can hold (e.g., 100).
-2. **Window ($W$):** The timeframe in seconds over which the refill occurs (e.g., 60 seconds).
-3. **Refill Rate ($R$):** Computed as $C / W$ tokens per second.
+1. **Capacity (C):** The maximum number of tokens a bucket can hold (e.g., 100).
+2. **Window (W):** The timeframe in seconds over which the refill occurs (e.g., 60 seconds).
+3. **Refill Rate (R):** Computed as `C / W` tokens per second.
 4. **Calculations in Lua:**
    - On each request, the elapsed time since the last request is computed using Redis server time.
-   - Tokens to add = $\text{elapsed\_time\_seconds} \times R$.
-   - The token count is updated: $\min(C, \text{tokens} + \text{tokens\_to\_add})$.
-   - If $\ge 1$ token is available, the token is consumed (decrement by 1), the operation is allowed, and the key's TTL is refreshed to $W$ seconds.
+   - Tokens to add = `elapsed_time_seconds * R`.
+   - The token count is updated: `min(C, tokens + tokens_to_add)`.
+   - If >= 1 token is available, the token is consumed (decrement by 1), the operation is allowed, and the key's TTL is refreshed to `W` seconds.
    - Otherwise, the request is blocked.
