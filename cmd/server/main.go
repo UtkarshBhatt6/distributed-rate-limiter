@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/UtkarshBhatt6/distributed-rate-limiter/pkg/ratelimit"
 )
 
@@ -68,6 +70,7 @@ func main() {
 		rateLimiterMap: make(map[uint64]*ratelimit.Limiter),
 		redisAddr:      "localhost:6379",
 	}
+	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/", &state)
 	fmt.Println("Starting server on :8091")
 	err := http.ListenAndServe(":8091", nil)

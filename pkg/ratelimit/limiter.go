@@ -49,6 +49,12 @@ func New(id uint64, resourceHash uint64, capacity int64, windowSize int64, subin
 
 // ShouldAllowRequest determines if a request should be allowed under the Token Bucket rate limit.
 func (l *Limiter) ShouldAllowRequest() bool {
+	resHashStr := strconv.FormatUint(l.resourceHash, 10)
+	startTime := time.Now()
+	defer func() {
+		RedisLatencyHistogram.WithLabelValues(resHashStr).Observe(time.Since(startTime).Seconds())
+	}()
+
 	client := getRedisClient(l.redisAddr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -65,24 +71,36 @@ func (l *Limiter) ShouldAllowRequest() bool {
 			result, err = client.Eval(ctx, TokenBucketScript, []string{l.redisKey}, l.capacity, l.windowSize).Result()
 			if err != nil {
 				// Fallback to rate-limiting in case of Redis failure
+				RequestsCounter.WithLabelValues(resHashStr, "error").Inc()
 				return false
 			}
 		} else {
+			RequestsCounter.WithLabelValues(resHashStr, "error").Inc()
 			return false
 		}
 	}
 
 	// Result should be 1 if allowed, 0 otherwise
 	allowed, ok := result.(int64)
+	var isAllowed bool
 	if !ok {
 		// Redis might return it as interface{} containing int or float
 		if val, err := strconv.ParseInt(fmt.Sprintf("%v", result), 10, 64); err == nil {
-			return val == 1
+			isAllowed = val == 1
+		} else {
+			isAllowed = false
 		}
-		return false
+	} else {
+		isAllowed = allowed == 1
 	}
 
-	return allowed == 1
+	status := "allowed"
+	if !isAllowed {
+		status = "rejected"
+	}
+	RequestsCounter.WithLabelValues(resHashStr, status).Inc()
+
+	return isAllowed
 }
 
 func isNoScriptErr(err error) bool {

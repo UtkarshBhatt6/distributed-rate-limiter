@@ -3,8 +3,11 @@ package ratelimit
 import (
 	"context"
 	"math/rand"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 const testRedisAddr = "localhost:6379"
@@ -36,6 +39,18 @@ func TestTokenBucketRateLimiter(t *testing.T) {
 	// 3. The 4th request should be blocked
 	if limiter.ShouldAllowRequest() {
 		t.Error("Request 4 should have been blocked (bucket empty)")
+	}
+
+	// Check metrics
+	res1Str := strconv.FormatUint(resource1, 10)
+	allowedCount := testutil.ToFloat64(RequestsCounter.WithLabelValues(res1Str, "allowed"))
+	if allowedCount != 3 {
+		t.Errorf("Expected 3 allowed requests in metrics, got %f", allowedCount)
+	}
+
+	rejectedCount := testutil.ToFloat64(RequestsCounter.WithLabelValues(res1Str, "rejected"))
+	if rejectedCount != 1 {
+		t.Errorf("Expected 1 rejected request in metrics, got %f", rejectedCount)
 	}
 
 	// 4. Wait for 1.1 seconds, which should refill at least 1 token

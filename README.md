@@ -37,17 +37,52 @@ graph TD
 .
 ├── cmd/
 │   └── server/
-│       └── main.go       # Go HTTP server demonstrating rate-limiter usage
+│       └── main.go       # Go HTTP server demonstrating rate-limiter & metrics usage
 ├── pkg/
 │   └── ratelimit/
 │       ├── limiter.go     # Core rate limiting logic and constructor
-│       ├── limiter_test.go# Unit & integration tests
+│       ├── limiter_test.go# Unit & integration tests with metrics assertions
 │       ├── lua.go         # Token bucket Lua script definition
+│       ├── metrics.go     # Prometheus metrics registration & definitions
 │       └── redis.go       # Cached Redis client connection pool manager
+├── grafana/
+│   └── provisioning/
+│       └── datasources/
+│           └── datasource.yml # Autoprovisioned Grafana datasource config
+├── docker-compose.yml     # Local services orchestration
+├── prometheus.yml         # Prometheus scraping config
 ├── go.mod
 ├── go.sum
 └── README.md
 ```
+
+---
+
+## Metrics & Monitoring (Grafana + Prometheus)
+
+This project has built-in integration with **Prometheus** for metrics collection and **Grafana** for dashboard visualization.
+
+### Local Setup (Using Docker Compose)
+
+To spin up a local instance of Redis, Prometheus, and Grafana:
+
+1. Start the Docker services:
+   ```bash
+   docker compose up -d
+   ```
+   This will start:
+   - **Redis** on port `6379`
+   - **Prometheus** on port `9090` (pre-configured to scrape the Go server)
+   - **Grafana** on port `3000` (pre-provisioned with Prometheus as the default data source)
+
+2. Run the Go server locally:
+   ```bash
+   go run cmd/server/main.go
+   ```
+
+3. Open Grafana at `http://localhost:3000` (Default credentials: `admin` / `admin`). You can immediately create dashboards utilizing the following exposed metrics:
+   - `ratelimit_requests_total`: Counter tracking evaluations (labeled by `resource_hash` and `status` as `allowed` / `rejected` / `error`).
+   - `ratelimit_redis_latency_seconds`: Histogram logging Redis Lua execution times.
 
 ---
 
@@ -56,7 +91,7 @@ graph TD
 ### Prerequisites
 
 - Go (1.24 or higher)
-- Redis server running on `localhost:6379` (configurable in `main.go`)
+- Redis server running on `localhost:6379` (either local or via Docker Compose)
 
 ### Running the Server
 
@@ -66,11 +101,11 @@ Start the Go HTTP server:
 go run cmd/server/main.go
 ```
 
-The server will start listening on port `:8091`. Every request to the server is rate-limited using the Token Bucket strategy.
+The server will start listening on port `:8091`. Every request to the server is rate-limited using the Token Bucket strategy and has telemetry exposed at `:8091/metrics`.
 
 ### Running Tests
 
-Execute the unit/integration tests:
+Execute the unit/integration tests (which automatically verify metrics collection):
 
 ```bash
 go test -v ./pkg/ratelimit/...
