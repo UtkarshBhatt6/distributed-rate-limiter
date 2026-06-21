@@ -116,6 +116,39 @@ go test -v ./pkg/ratelimit/...
 
 ---
 
+## Dynamic Rate Limit Configurations
+
+The server fetches endpoint quotas dynamically from Redis using the hash key `rate_limit_configs`. 
+
+### Seeded Quotas (Auto-populated on Startup)
+
+On startup, the Go server automatically seeds the following default quotas into Redis:
+
+| Key Prefix | Capacity | Window | Format (`capacity:window`) |
+|---|---|---|---|
+| `/login` | 5 requests | 60 seconds | `5:60` |
+| `/api` | 10 requests | 60 seconds | `10:60` |
+| `default` | 100 requests | 60 seconds | `100:60` |
+
+- **Longest Prefix Matching:** Request paths are matched using longest prefix matching. For example, a request to `/api/v1/users` will match `/api` (quota 10/min) rather than the default fallback (100/min).
+- **In-Memory Caching:** To avoid Redis lookup overhead on every incoming HTTP request, the Go server caches these quotas locally and reloads them from Redis every **10 seconds**.
+
+### Modifying Quotas Live
+
+You can dynamically change rate limits for any endpoint in real-time without restarting the Go server by running a Redis command:
+
+```bash
+# Example: Change /api limit to 20 requests per minute
+redis-cli HSET rate_limit_configs "/api" "20:60"
+
+# Example: Add a new custom limit for /download of 2 requests per 30 seconds
+redis-cli HSET rate_limit_configs "/download" "2:30"
+```
+
+Updates are picked up and applied automatically by the Go server within 10 seconds.
+
+---
+
 ## Token Bucket Algorithm Details
 
 1. **Capacity (C):** The maximum number of tokens a bucket can hold (e.g., 100).
