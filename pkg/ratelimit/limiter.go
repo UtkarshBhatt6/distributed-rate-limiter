@@ -10,8 +10,6 @@ import (
 type Limiter struct {
 	id           uint64
 	resourceHash uint64
-	capacity     int64
-	windowSize   int64
 	subintervals int64
 	redisAddr    string
 	redisKey     string
@@ -20,8 +18,8 @@ type Limiter struct {
 
 // New creates and initializes a new rate Limiter.
 // It also pre-loads the Token Bucket Lua script into Redis.
-func New(id uint64, resourceHash uint64, capacity int64, windowSize int64, subintervals int64, redisAddr string) (*Limiter, error) {
-	client := getRedisClient(redisAddr)
+func New(id uint64, resourceHash uint64, subintervals int64, redisAddr string) (*Limiter, error) {
+	client := GetRedisClient(redisAddr)
 
 	// Context for loading the Lua script
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -38,8 +36,6 @@ func New(id uint64, resourceHash uint64, capacity int64, windowSize int64, subin
 	return &Limiter{
 		id:           id,
 		resourceHash: resourceHash,
-		capacity:     capacity,
-		windowSize:   windowSize,
 		subintervals: subintervals,
 		redisAddr:    redisAddr,
 		redisKey:     redisKey,
@@ -48,18 +44,19 @@ func New(id uint64, resourceHash uint64, capacity int64, windowSize int64, subin
 }
 
 // ShouldAllowRequest determines if a request should be allowed under the Token Bucket rate limit.
+// It accepts capacity and windowSize dynamically for each request.
 // It returns:
 //  - allowed: whether the request is allowed.
 //  - remaining: the remaining tokens in the bucket.
 //  - resetTime: the Unix timestamp (seconds) when the bucket will be fully refilled.
-func (l *Limiter) ShouldAllowRequest() (bool, int64, int64) {
+func (l *Limiter) ShouldAllowRequest(capacity int64, windowSize int64) (bool, int64, int64) {
 	resHashStr := strconv.FormatUint(l.resourceHash, 10)
 	startTime := time.Now()
 	defer func() {
 		RedisLatencyHistogram.WithLabelValues(resHashStr).Observe(time.Since(startTime).Seconds())
 	}()
 
-	client := getRedisClient(l.redisAddr)
+	client := GetRedisClient(l.redisAddr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -68,11 +65,11 @@ func (l *Limiter) ShouldAllowRequest() (bool, int64, int64) {
 	// KEYS[1] is the key for the resource
 	// ARGV[1] is the capacity
 	// ARGV[2] is the window size in seconds
-	result, err := client.EvalSha(ctx, l.scriptSHA, []string{l.redisKey}, l.capacity, l.windowSize).Result()
+	result, err := client.EvalSha(ctx, l.scriptSHA, []string{l.redisKey}, capacity, windowSize).Result()
 	if err != nil {
 		// If the script is missing in cache (e.g. Redis restarted), fallback to EVAL
 		if isNoScriptErr(err) {
-			result, err = client.Eval(ctx, TokenBucketScript, []string{l.redisKey}, l.capacity, l.windowSize).Result()
+			result, err = client.Eval(ctx, TokenBucketScript, []string{l.redisKey}, capacity, windowSize).Result()
 			if err != nil {
 				// Fallback to rate-limiting in case of Redis failure
 				RequestsCounter.WithLabelValues(resHashStr, "error").Inc()
@@ -112,11 +109,6 @@ func (l *Limiter) ShouldAllowRequest() (bool, int64, int64) {
 	RequestsCounter.WithLabelValues(resHashStr, status).Inc()
 
 	return isAllowed, remaining, resetTime
-}
-
-// GetCapacity returns the capacity of the rate limiter.
-func (l *Limiter) GetCapacity() int64 {
-	return l.capacity
 }
 
 func isNoScriptErr(err error) bool {

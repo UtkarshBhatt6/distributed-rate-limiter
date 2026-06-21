@@ -11,9 +11,9 @@ var (
 	clients   = make(map[string]*redis.Client)
 )
 
-// getRedisClient returns a cached redis.Client for the given address,
+// GetRedisClient returns a cached redis.Client for the given address,
 // or creates a new one if it doesn't exist yet.
-func getRedisClient(addr string) *redis.Client {
+func GetRedisClient(addr string) *redis.Client {
 	clientsMu.Lock()
 	defer clientsMu.Unlock()
 

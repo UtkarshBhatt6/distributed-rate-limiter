@@ -14,7 +14,7 @@ const testRedisAddr = "localhost:6379"
 
 func TestTokenBucketRateLimiter(t *testing.T) {
 	// Clean up any existing state in local Redis for the test keys
-	client := getRedisClient(testRedisAddr)
+	client := GetRedisClient(testRedisAddr)
 	ctx := context.Background()
 	
 	resource1 := rand.Uint64()
@@ -23,14 +23,14 @@ func TestTokenBucketRateLimiter(t *testing.T) {
 	// Clean redis keys
 	client.Del(ctx, "rate_limit:12345")
 
-	// 1. Create a limiter with capacity 3, window size 3 seconds (refill rate = 1 token/sec)
-	limiter, err := New(1, resource1, 3, 3, 1, testRedisAddr)
+	// 1. Create a limiter
+	limiter, err := New(1, resource1, 1, testRedisAddr)
 	if err != nil {
 		t.Fatalf("Failed to create limiter: %v", err)
 	}
 
-	// 2. Consume all 3 tokens
-	allowed, remaining, resetTime := limiter.ShouldAllowRequest()
+	// 2. Consume all 3 tokens (using capacity 3, window size 3)
+	allowed, remaining, resetTime := limiter.ShouldAllowRequest(3, 3)
 	if !allowed {
 		t.Error("Request 1 should have been allowed")
 	}
@@ -42,18 +42,18 @@ func TestTokenBucketRateLimiter(t *testing.T) {
 		t.Errorf("Request 1: unexpected resetTime %d (now=%d)", resetTime, now)
 	}
 
-	allowed, remaining, _ = limiter.ShouldAllowRequest()
+	allowed, remaining, _ = limiter.ShouldAllowRequest(3, 3)
 	if !allowed || remaining != 1 {
 		t.Errorf("Request 2: allowed=%v, remaining=%d (expected remaining=1)", allowed, remaining)
 	}
 
-	allowed, remaining, _ = limiter.ShouldAllowRequest()
+	allowed, remaining, _ = limiter.ShouldAllowRequest(3, 3)
 	if !allowed || remaining != 0 {
 		t.Errorf("Request 3: allowed=%v, remaining=%d (expected remaining=0)", allowed, remaining)
 	}
 
 	// 3. The 4th request should be blocked
-	allowed, remaining, resetTime = limiter.ShouldAllowRequest()
+	allowed, remaining, resetTime = limiter.ShouldAllowRequest(3, 3)
 	if allowed {
 		t.Error("Request 4 should have been blocked (bucket empty)")
 	}
@@ -76,25 +76,25 @@ func TestTokenBucketRateLimiter(t *testing.T) {
 	// 4. Wait for 1.1 seconds, which should refill at least 1 token
 	time.Sleep(1100 * time.Millisecond)
 
-	allowed, _, _ = limiter.ShouldAllowRequest()
+	allowed, _, _ = limiter.ShouldAllowRequest(3, 3)
 	if !allowed {
 		t.Error("Request should be allowed after waiting for refill")
 	}
 
 	// Another immediate request should be blocked
-	allowed, _, _ = limiter.ShouldAllowRequest()
+	allowed, _, _ = limiter.ShouldAllowRequest(3, 3)
 	if allowed {
 		t.Error("Request should be blocked again after consuming refilled token")
 	}
 
 	// 5. Test separation of resources
-	limiter2, err := New(2, resource2, 5, 10, 1, testRedisAddr)
+	limiter2, err := New(2, resource2, 1, testRedisAddr)
 	if err != nil {
 		t.Fatalf("Failed to create limiter 2: %v", err)
 	}
 
 	// Resource 2 should be allowed even if Resource 1 is rate limited
-	allowed, _, _ = limiter2.ShouldAllowRequest()
+	allowed, _, _ = limiter2.ShouldAllowRequest(5, 10)
 	if !allowed {
 		t.Error("Resource 2 should be allowed independently")
 	}

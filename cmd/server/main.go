@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
@@ -23,10 +24,17 @@ func hashString(str string) uint64 {
 	return binary.LittleEndian.Uint64(hash[0:8])
 }
 
+type RateLimitConfig struct {
+	Capacity int64
+	Window   int64
+}
+
 type state struct {
-	mu             sync.RWMutex
-	rateLimiterMap map[uint64]*ratelimit.Limiter
-	redisAddr      string
+	mu               sync.RWMutex
+	rateLimiterMap   map[uint64]*ratelimit.Limiter
+	redisAddr        string
+	configs          map[string]RateLimitConfig
+	configLastLoaded time.Time
 }
 
 func (state *state) getRateLimiter(resourceHash uint64) (limiter *ratelimit.Limiter, err error) {
@@ -45,8 +53,8 @@ func (state *state) getRateLimiter(resourceHash uint64) (limiter *ratelimit.Limi
 		return limiter, nil
 	}
 
-	// initialize limiter to allow 100 requests/window, with sliding window of 60 seconds and subintervals of 5 seconds.
-	limiter, err = ratelimit.New(rand.Uint64(), resourceHash, 100, 60, 5, state.redisAddr)
+	// initialize limiter
+	limiter, err = ratelimit.New(rand.Uint64(), resourceHash, 5, state.redisAddr)
 	if err == nil {
 		state.rateLimiterMap[resourceHash] = limiter
 	}
@@ -73,6 +81,82 @@ func getClientIP(r *http.Request) string {
 	return ip
 }
 
+func seedRateLimitConfigs(redisAddr string) error {
+	client := ratelimit.GetRedisClient(redisAddr)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Seed dynamic configs:
+	// - /login: 5 requests per minute
+	// - /api: 10 requests per minute
+	// - default: 100 requests per minute
+	err := client.HSet(ctx, "rate_limit_configs", map[string]interface{}{
+		"/login":  "5:60",
+		"/api":    "10:60",
+		"default": "100:60",
+	}).Err()
+	if err != nil {
+		return fmt.Errorf("failed to seed configurations: %w", err)
+	}
+	return nil
+}
+
+func (state *state) resolveConfig(path string) RateLimitConfig {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	now := time.Now()
+	// Reload configuration from Redis every 10 seconds to keep it dynamic
+	if state.configs == nil || now.Sub(state.configLastLoaded) > 10*time.Second {
+		client := ratelimit.GetRedisClient(state.redisAddr)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		configs, err := client.HGetAll(ctx, "rate_limit_configs").Result()
+		if err == nil {
+			newConfigs := make(map[string]RateLimitConfig)
+			for key, val := range configs {
+				parts := strings.Split(val, ":")
+				if len(parts) == 2 {
+					capVal, _ := strconv.ParseInt(parts[0], 10, 64)
+					winVal, _ := strconv.ParseInt(parts[1], 10, 64)
+					newConfigs[key] = RateLimitConfig{
+						Capacity: capVal,
+						Window:   winVal,
+					}
+				}
+			}
+			state.configs = newConfigs
+			state.configLastLoaded = now
+		}
+	}
+
+	// Longest prefix match against config prefixes
+	bestMatch := ""
+	for prefix := range state.configs {
+		if prefix == "default" {
+			continue
+		}
+		if strings.HasPrefix(path, prefix) {
+			if len(prefix) > len(bestMatch) {
+				bestMatch = prefix
+			}
+		}
+	}
+
+	if bestMatch != "" {
+		return state.configs[bestMatch]
+	}
+
+	// Fallback to default config
+	if def, ok := state.configs["default"]; ok {
+		return def
+	}
+
+	// Hardcoded fallback
+	return RateLimitConfig{Capacity: 100, Window: 60}
+}
+
 func (h *state) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	clientIP := getClientIP(r)
 	resource := r.URL.Path
@@ -85,10 +169,13 @@ func (h *state) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed, remaining, resetTime := limiter.ShouldAllowRequest()
+	// Resolve the dynamic quota configuration for the current path
+	cfg := h.resolveConfig(resource)
+
+	allowed, remaining, resetTime := limiter.ShouldAllowRequest(cfg.Capacity, cfg.Window)
 
 	// Write standard HTTP Rate-limiting headers
-	w.Header().Set("X-RateLimit-Limit", strconv.FormatInt(limiter.GetCapacity(), 10))
+	w.Header().Set("X-RateLimit-Limit", strconv.FormatInt(cfg.Capacity, 10))
 	w.Header().Set("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
 	w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetTime, 10))
 
@@ -112,6 +199,12 @@ func main() {
 		rateLimiterMap: make(map[uint64]*ratelimit.Limiter),
 		redisAddr:      "localhost:6379",
 	}
+
+	// Seed rate limiting configurations in Redis on startup
+	if err := seedRateLimitConfigs(state.redisAddr); err != nil {
+		fmt.Printf("Warning: failed to seed dynamic configs: %v\n", err)
+	}
+
 	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/", &state)
 	fmt.Println("Starting server on :8091")
