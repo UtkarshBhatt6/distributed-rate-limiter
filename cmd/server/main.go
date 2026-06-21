@@ -6,8 +6,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -49,19 +53,57 @@ func (state *state) getRateLimiter(resourceHash uint64) (limiter *ratelimit.Limi
 	return
 }
 
+func getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		ips := strings.Split(xff, ",")
+		return strings.TrimSpace(ips[0])
+	}
+	// Check X-Real-IP header
+	xrip := r.Header.Get("X-Real-IP")
+	if xrip != "" {
+		return xrip
+	}
+	// Fallback to RemoteAddr
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
+}
+
 func (h *state) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	clientIP := getClientIP(r)
 	resource := r.URL.Path
-	resourceHash := hashString(resource)
+	keyString := fmt.Sprintf("%s:%s", clientIP, resource)
+	resourceHash := hashString(keyString)
+
 	limiter, err := h.getRateLimiter(resourceHash)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	if !limiter.ShouldAllowRequest() {
+
+	allowed, remaining, resetTime := limiter.ShouldAllowRequest()
+
+	// Write standard HTTP Rate-limiting headers
+	w.Header().Set("X-RateLimit-Limit", strconv.FormatInt(limiter.GetCapacity(), 10))
+	w.Header().Set("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
+	w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetTime, 10))
+
+	if !allowed {
+		now := time.Now().Unix()
+		retryAfter := resetTime - now
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		w.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))
 		http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
 		return
 	}
-	fmt.Fprintf(w, "Allowed request for resource %s\n", resource)
+
+	fmt.Fprintf(w, "Allowed request for resource %s for client %s\n", resource, clientIP)
 }
 
 func main() {

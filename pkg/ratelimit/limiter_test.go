@@ -30,15 +30,35 @@ func TestTokenBucketRateLimiter(t *testing.T) {
 	}
 
 	// 2. Consume all 3 tokens
-	for i := 1; i <= 3; i++ {
-		if !limiter.ShouldAllowRequest() {
-			t.Errorf("Request %d should have been allowed", i)
-		}
+	allowed, remaining, resetTime := limiter.ShouldAllowRequest()
+	if !allowed {
+		t.Error("Request 1 should have been allowed")
+	}
+	if remaining != 2 {
+		t.Errorf("Request 1: expected remaining=2, got %d", remaining)
+	}
+	now := time.Now().Unix()
+	if resetTime < now || resetTime > now+3 {
+		t.Errorf("Request 1: unexpected resetTime %d (now=%d)", resetTime, now)
+	}
+
+	allowed, remaining, _ = limiter.ShouldAllowRequest()
+	if !allowed || remaining != 1 {
+		t.Errorf("Request 2: allowed=%v, remaining=%d (expected remaining=1)", allowed, remaining)
+	}
+
+	allowed, remaining, _ = limiter.ShouldAllowRequest()
+	if !allowed || remaining != 0 {
+		t.Errorf("Request 3: allowed=%v, remaining=%d (expected remaining=0)", allowed, remaining)
 	}
 
 	// 3. The 4th request should be blocked
-	if limiter.ShouldAllowRequest() {
+	allowed, remaining, resetTime = limiter.ShouldAllowRequest()
+	if allowed {
 		t.Error("Request 4 should have been blocked (bucket empty)")
+	}
+	if remaining != 0 {
+		t.Errorf("Request 4: expected remaining=0, got %d", remaining)
 	}
 
 	// Check metrics
@@ -56,12 +76,14 @@ func TestTokenBucketRateLimiter(t *testing.T) {
 	// 4. Wait for 1.1 seconds, which should refill at least 1 token
 	time.Sleep(1100 * time.Millisecond)
 
-	if !limiter.ShouldAllowRequest() {
+	allowed, _, _ = limiter.ShouldAllowRequest()
+	if !allowed {
 		t.Error("Request should be allowed after waiting for refill")
 	}
 
 	// Another immediate request should be blocked
-	if limiter.ShouldAllowRequest() {
+	allowed, _, _ = limiter.ShouldAllowRequest()
+	if allowed {
 		t.Error("Request should be blocked again after consuming refilled token")
 	}
 
@@ -72,7 +94,8 @@ func TestTokenBucketRateLimiter(t *testing.T) {
 	}
 
 	// Resource 2 should be allowed even if Resource 1 is rate limited
-	if !limiter2.ShouldAllowRequest() {
+	allowed, _, _ = limiter2.ShouldAllowRequest()
+	if !allowed {
 		t.Error("Resource 2 should be allowed independently")
 	}
 }

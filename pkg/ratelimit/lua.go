@@ -50,5 +50,8 @@ if tokens >= 1 then
     redis.call('EXPIRE', key, math.ceil(window))
 end
 
-return allowed
+local time_to_fill = (capacity - tokens) / refill_rate
+local reset_time = now + time_to_fill
+
+return { allowed, math.floor(tokens), math.ceil(reset_time) }
 `

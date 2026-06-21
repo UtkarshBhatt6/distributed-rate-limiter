@@ -28,6 +28,8 @@ graph TD
 - **EVALSHA Performance Optimization:** Pre-loads the Lua script into Redis at startup and executes requests via `EVALSHA` to minimize network overhead.
 - **Connection Cache Manager:** Caches and reuses Redis clients by address to prevent connection/thread pool exhaustion.
 - **Concurrency-Safe Server:** Implements a thread-safe double-checked lock pattern on the Go server side to safely manage multiple rate limiter instances concurrently.
+- **Per-IP Rate Limiting:** Identifies client IPs via reverse proxy headers (`X-Forwarded-For`, `X-Real-IP`) or connection remote address, allocating separate rate limit buckets per client IP.
+- **HTTP Response Headers:** Returns standard rate limiting headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After`) with response metadata.
 
 ---
 

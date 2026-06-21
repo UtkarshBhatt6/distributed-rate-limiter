@@ -48,7 +48,11 @@ func New(id uint64, resourceHash uint64, capacity int64, windowSize int64, subin
 }
 
 // ShouldAllowRequest determines if a request should be allowed under the Token Bucket rate limit.
-func (l *Limiter) ShouldAllowRequest() bool {
+// It returns:
+//  - allowed: whether the request is allowed.
+//  - remaining: the remaining tokens in the bucket.
+//  - resetTime: the Unix timestamp (seconds) when the bucket will be fully refilled.
+func (l *Limiter) ShouldAllowRequest() (bool, int64, int64) {
 	resHashStr := strconv.FormatUint(l.resourceHash, 10)
 	startTime := time.Now()
 	defer func() {
@@ -72,26 +76,33 @@ func (l *Limiter) ShouldAllowRequest() bool {
 			if err != nil {
 				// Fallback to rate-limiting in case of Redis failure
 				RequestsCounter.WithLabelValues(resHashStr, "error").Inc()
-				return false
+				return false, 0, 0
 			}
 		} else {
 			RequestsCounter.WithLabelValues(resHashStr, "error").Inc()
-			return false
+			return false, 0, 0
 		}
 	}
 
-	// Result should be 1 if allowed, 0 otherwise
-	allowed, ok := result.(int64)
+	// Parse Lua multi-bulk response (returned as Go []interface{})
 	var isAllowed bool
-	if !ok {
-		// Redis might return it as interface{} containing int or float
-		if val, err := strconv.ParseInt(fmt.Sprintf("%v", result), 10, 64); err == nil {
-			isAllowed = val == 1
-		} else {
-			isAllowed = false
+	var remaining int64
+	var resetTime int64
+
+	if slice, ok := result.([]interface{}); ok && len(slice) >= 3 {
+		if allowedVal, ok := slice[0].(int64); ok {
+			isAllowed = (allowedVal == 1)
+		}
+		if remainingVal, ok := slice[1].(int64); ok {
+			remaining = remainingVal
+		}
+		if resetVal, ok := slice[2].(int64); ok {
+			resetTime = resetVal
 		}
 	} else {
-		isAllowed = allowed == 1
+		// Fallback in case of parsing issue
+		RequestsCounter.WithLabelValues(resHashStr, "error").Inc()
+		return false, 0, 0
 	}
 
 	status := "allowed"
@@ -100,7 +111,12 @@ func (l *Limiter) ShouldAllowRequest() bool {
 	}
 	RequestsCounter.WithLabelValues(resHashStr, status).Inc()
 
-	return isAllowed
+	return isAllowed, remaining, resetTime
+}
+
+// GetCapacity returns the capacity of the rate limiter.
+func (l *Limiter) GetCapacity() int64 {
+	return l.capacity
 }
 
 func isNoScriptErr(err error) bool {
