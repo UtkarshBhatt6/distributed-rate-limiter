@@ -172,7 +172,7 @@ func (h *state) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolve the dynamic quota configuration for the current path
 	cfg := h.resolveConfig(resource)
 
-	allowed, remaining, resetTime := limiter.ShouldAllowRequest(cfg.Capacity, cfg.Window)
+	allowed, remaining, resetTime, retryAfter := limiter.ShouldAllowRequest(cfg.Capacity, cfg.Window)
 
 	// Write standard HTTP Rate-limiting headers
 	w.Header().Set("X-RateLimit-Limit", strconv.FormatInt(cfg.Capacity, 10))
@@ -180,11 +180,6 @@ func (h *state) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetTime, 10))
 
 	if !allowed {
-		now := time.Now().Unix()
-		retryAfter := resetTime - now
-		if retryAfter < 0 {
-			retryAfter = 0
-		}
 		w.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))
 		http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
 		return

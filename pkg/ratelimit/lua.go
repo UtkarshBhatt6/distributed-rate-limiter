@@ -52,6 +52,9 @@ end
 
 local time_to_fill = (capacity - tokens) / refill_rate
 local reset_time = now + time_to_fill
-
-return { allowed, math.floor(tokens), math.ceil(reset_time) }
+local retry_after = 0
+if allowed == 0 then
+    retry_after = (1 - tokens) / refill_rate
+end
+return { allowed, math.floor(tokens), math.ceil(reset_time), math.ceil(retry_after) }
 `

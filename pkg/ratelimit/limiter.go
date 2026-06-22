@@ -46,10 +46,11 @@ func New(id uint64, resourceHash uint64, subintervals int64, redisAddr string) (
 // ShouldAllowRequest determines if a request should be allowed under the Token Bucket rate limit.
 // It accepts capacity and windowSize dynamically for each request.
 // It returns:
-//  - allowed: whether the request is allowed.
-//  - remaining: the remaining tokens in the bucket.
-//  - resetTime: the Unix timestamp (seconds) when the bucket will be fully refilled.
-func (l *Limiter) ShouldAllowRequest(capacity int64, windowSize int64) (bool, int64, int64) {
+//   - allowed: whether the request is allowed.
+//   - remaining: the remaining tokens in the bucket.
+//   - resetTime: the Unix timestamp (seconds) when the bucket will be fully refilled.
+//   - retryAfter: the duration in seconds the client must wait before retrying (0 if allowed).
+func (l *Limiter) ShouldAllowRequest(capacity int64, windowSize int64) (bool, int64, int64, int64) {
 	resHashStr := strconv.FormatUint(l.resourceHash, 10)
 	startTime := time.Now()
 	defer func() {
@@ -73,11 +74,11 @@ func (l *Limiter) ShouldAllowRequest(capacity int64, windowSize int64) (bool, in
 			if err != nil {
 				// Fallback to rate-limiting in case of Redis failure
 				RequestsCounter.WithLabelValues(resHashStr, "error").Inc()
-				return false, 0, 0
+				return false, 0, 0, 0
 			}
 		} else {
 			RequestsCounter.WithLabelValues(resHashStr, "error").Inc()
-			return false, 0, 0
+			return false, 0, 0, 0
 		}
 	}
 
@@ -85,8 +86,8 @@ func (l *Limiter) ShouldAllowRequest(capacity int64, windowSize int64) (bool, in
 	var isAllowed bool
 	var remaining int64
 	var resetTime int64
-
-	if slice, ok := result.([]interface{}); ok && len(slice) >= 3 {
+	var retryAfter int64
+	if slice, ok := result.([]interface{}); ok && len(slice) >= 4 {
 		if allowedVal, ok := slice[0].(int64); ok {
 			isAllowed = (allowedVal == 1)
 		}
@@ -96,10 +97,13 @@ func (l *Limiter) ShouldAllowRequest(capacity int64, windowSize int64) (bool, in
 		if resetVal, ok := slice[2].(int64); ok {
 			resetTime = resetVal
 		}
+		if retryVal, ok := slice[3].(int64); ok {
+			retryAfter = retryVal
+		}
 	} else {
 		// Fallback in case of parsing issue
 		RequestsCounter.WithLabelValues(resHashStr, "error").Inc()
-		return false, 0, 0
+		return false, 0, 0, 0
 	}
 
 	status := "allowed"
@@ -108,7 +112,7 @@ func (l *Limiter) ShouldAllowRequest(capacity int64, windowSize int64) (bool, in
 	}
 	RequestsCounter.WithLabelValues(resHashStr, status).Inc()
 
-	return isAllowed, remaining, resetTime
+	return isAllowed, remaining, resetTime, retryAfter
 }
 
 func isNoScriptErr(err error) bool {
