@@ -162,7 +162,6 @@ func (h *state) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resource := r.URL.Path
 	keyString := fmt.Sprintf("%s:%s", clientIP, resource)
 	resourceHash := hashString(keyString)
-
 	limiter, err := h.getRateLimiter(resourceHash)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
